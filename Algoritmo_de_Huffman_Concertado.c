@@ -254,7 +254,10 @@ void compactar_arquivo(const char *input_filename, const char *output_filename) 
     rewind(in);
     while (fread(&byte, 1, 1, in) == 1) {
         char *codigo = tabela_codigos[byte];
-        if (!codigo) continue;
+        if (!codigo) {
+            printf("Erro: Byte %d sem codigo na tabela\n", byte);
+            continue;
+        }
         
         for (size_t i = 0; codigo[i] != '\0'; i++) {
             buffer <<= 1;
@@ -311,7 +314,7 @@ void descompactar_arquivo(const char *input_filename, const char *output_filenam
 
     unsigned short header_value = (header_bytes[0] << 8) | header_bytes[1];
     int trash_bits = (header_value >> 13) & 0x7;
-    int tree_size = header_value & 0x1FFF;
+    // Removida a variável tree_size não utilizada
 
     // Desserializa a árvore
     NoHuffman* raiz = desserializar_arvore(in);
@@ -368,6 +371,53 @@ void descompactar_arquivo(const char *input_filename, const char *output_filenam
     printf("Arquivo descompactado com sucesso: %s\n", output_filename);
 }
 
+// ================= VERIFICAÇÃO DE INTEGRIDADE =================
+
+void verificar_integridade(const char *arquivo_compactado, const char *arquivo_descompactado) {
+    // Verifica se o arquivo original existe (sem .huff)
+    char nome_original[256];
+    strncpy(nome_original, arquivo_compactado, strlen(arquivo_compactado) - 5);
+    nome_original[strlen(arquivo_compactado) - 5] = '\0';
+    
+    FILE *original = fopen(nome_original, "rb");
+    FILE *descompactado = fopen(arquivo_descompactado, "rb");
+    
+    if (!original || !descompactado) {
+        if (!original) printf("Arquivo original %s nao encontrado para comparacao\n", nome_original);
+        if (!descompactado) printf("Arquivo descompactado %s nao encontrado\n", arquivo_descompactado);
+        if (original) fclose(original);
+        if (descompactado) fclose(descompactado);
+        return;
+    }
+
+    int c1, c2;
+    long pos = 0;
+    int diferencas = 0;
+
+    while ((c1 = fgetc(original)) != EOF && (c2 = fgetc(descompactado)) != EOF) {
+        if (c1 != c2) {
+            printf("Diferenca na posicao %ld: original=0x%02X, descompactado=0x%02X\n", 
+                  pos, c1, c2);
+            diferencas++;
+        }
+        pos++;
+    }
+
+    // Verifica se um arquivo é maior que o outro
+    if (fgetc(original) != EOF || fgetc(descompactado) != EOF) {
+        printf("AVISO: Os arquivos tem tamanhos diferentes!\n");
+    }
+
+    fclose(original);
+    fclose(descompactado);
+
+    if (diferencas == 0) {
+        printf("Verificacao concluida: arquivos identicos\n");
+    } else {
+        printf("AVISO: Encontradas %d diferencas entre os arquivos\n", diferencas);
+    }
+}
+
 // ================= FUNÇÃO PRINCIPAL =================
 
 int main() {
@@ -376,6 +426,7 @@ int main() {
     int opcao;
     char nome_arquivo[256] = {0};
     char nome_saida[256] = {0};
+    char nome_original[256] = {0};
 
     printf("Huffman File Compressor\n");
     printf("1. Compactar arquivo\n");
@@ -395,11 +446,14 @@ int main() {
         }
         nome_arquivo[strcspn(nome_arquivo, "\n")] = '\0';
 
-        strncpy(nome_saida, nome_arquivo, sizeof(nome_saida) - 5);
-        strcat(nome_saida, ".huff");
+        // Guarda o nome original para uso posterior
+        strcpy(nome_original, nome_arquivo);
+        
+        // Adiciona .huff ao nome de saída
+        strcat(nome_arquivo, ".huff");
 
-        compactar_arquivo(nome_arquivo, nome_saida);
-        printf("Arquivo compactado: %s\n", nome_saida);
+        compactar_arquivo(nome_original, nome_arquivo);
+        printf("Arquivo compactado: %s\n", nome_arquivo);
 
     } else if (opcao == 2) {
         printf("Arquivo .huff a descompactar: ");
@@ -414,17 +468,20 @@ int main() {
             return 1;
         }
 
-        strncpy(nome_saida, nome_arquivo, sizeof(nome_saida) - 5);
-        char* ext = strstr(nome_saida, ".huff");
-        if (ext) *ext = '\0';
-        
-        // Mantém a extensão original se existia antes do .huff
-        char* original_ext = strrchr(nome_arquivo, '.');
-        if (original_ext && strcmp(original_ext, ".huff") != 0) {
-            strcat(nome_saida, original_ext);
-        }
+        // Cria nome de saída com .dehuff
+        strncpy(nome_saida, nome_arquivo, strlen(nome_arquivo) - 5);
+        nome_saida[strlen(nome_arquivo) - 5] = '\0';
+        strcat(nome_saida, ".dehuff");
 
+        // Descompacta
         descompactar_arquivo(nome_arquivo, nome_saida);
+
+        // Verificação opcional de integridade
+        printf("\nDeseja verificar a integridade? (s/n): ");
+        char resposta = getchar();
+        if (resposta == 's' || resposta == 'S') {
+            verificar_integridade(nome_arquivo, nome_saida);
+        }
     } else {
         printf("Opção inválida!\n");
         return 1;
