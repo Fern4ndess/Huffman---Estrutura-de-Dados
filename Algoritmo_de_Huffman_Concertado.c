@@ -1,407 +1,399 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdint.h>
 #include <locale.h>
 
-#define TAM_ASCII 256
-#define BUFFER_SIZE 65536  // 64KB para melhor performance de I/O
+#define BYTE unsigned char
+
+typedef struct No {
+    BYTE caractere;
+    int frequencia;
+    struct No *esquerda, *direita;
+} No;
 
 typedef struct {
-    unsigned char trash : 3;
-    unsigned short tree_size : 13;
-} HuffmanHeader;
+    BYTE byte;
+    int bits;
+    BYTE codigo[256];
+} Codigo;
 
-typedef struct NoHuffman {
-    unsigned char caractere;
-    unsigned long frequencia;  // Alterado para long para suportar arquivos grandes
-    struct NoHuffman *esquerda, *direita;
-} NoHuffman;
+typedef struct Heap {
+    int tamanho;
+    No *dados[256];
+} Heap;
 
-typedef struct NoLista {
-    void *dados;
-    struct NoLista *prox;
-} NoLista;
-
-// Estrutura otimizada para escrita de bits
 typedef struct {
-    unsigned char buffer[BUFFER_SIZE];
-    unsigned char byte_atual;
-    unsigned int pos_buffer;
-    unsigned int bits_preenchidos;
-} BitStream;
+    BYTE byte;
+    int frequencia;
+} Frequencia;
 
-// Variáveis globais otimizadas
-unsigned char* tabela_codigos[TAM_ASCII];
-unsigned char tamanho_codigos[TAM_ASCII];  // Armazena tamanhos dos códigos
+typedef struct {
+    BYTE byte;
+    int frequencia;
+} Item;
 
-// ================= FUNÇÕES OTIMIZADAS =================
+// Funções da árvore de Huffman
 
-void init_bit_stream(BitStream *bs) {
-    bs->pos_buffer = 0;
-    bs->byte_atual = 0;
-    bs->bits_preenchidos = 0;
-    memset(bs->buffer, 0, BUFFER_SIZE);
-}
-
-void write_bit(BitStream *bs, int bit, FILE *out) {
-    bs->byte_atual = (bs->byte_atual << 1) | (bit & 1);
-    bs->bits_preenchidos++;
-    
-    if (bs->bits_preenchidos == 8) {
-        bs->buffer[bs->pos_buffer++] = bs->byte_atual;
-        if (bs->pos_buffer == BUFFER_SIZE) {
-            fwrite(bs->buffer, 1, BUFFER_SIZE, out);
-            bs->pos_buffer = 0;
-        }
-        bs->byte_atual = 0;
-        bs->bits_preenchidos = 0;
-    }
-}
-
-void flush_bit_stream(BitStream *bs, FILE *out) {
-    if (bs->bits_preenchidos > 0) {
-        bs->byte_atual <<= (8 - bs->bits_preenchidos);
-        bs->buffer[bs->pos_buffer++] = bs->byte_atual;
-    }
-    if (bs->pos_buffer > 0) {
-        fwrite(bs->buffer, 1, bs->pos_buffer, out);
-    }
-}
-
-NoHuffman* criar_no(unsigned char caractere, unsigned long frequencia) {
-    NoHuffman* novo = (NoHuffman*)malloc(sizeof(NoHuffman));
-    if (!novo) return NULL;
-    
+No* criar_no(BYTE caractere, int frequencia, No *esquerda, No *direita)
+{
+    No *novo = (No *) malloc(sizeof(No));
     novo->caractere = caractere;
     novo->frequencia = frequencia;
-    novo->esquerda = novo->direita = NULL;
+    novo->esquerda = esquerda;
+    novo->direita = direita;
     return novo;
 }
 
-// Função otimizada para construção da árvore
-NoHuffman* construir_arvore_otimizada(unsigned long freq[]) {
-    NoLista* lista = NULL;
-    NoHuffman* nos[TAM_ASCII];
-    int count = 0;
-    
-    // Pré-alocação e contagem de símbolos usados
-    for (int i = 0; i < TAM_ASCII; i++) {
-        if (freq[i] > 0) {
-            nos[count++] = criar_no(i, freq[i]);
-        }
-    }
-    
-    // Ordenação otimizada para pequenos conjuntos
-    for (int i = 0; i < count-1; i++) {
-        for (int j = i+1; j < count; j++) {
-            if (nos[i]->frequencia > nos[j]->frequencia) {
-                NoHuffman* temp = nos[i];
-                nos[i] = nos[j];
-                nos[j] = temp;
-            }
-        }
-    }
-    
-    // Construção da árvore
-    while (count > 1) {
-        NoHuffman* esquerda = nos[0];
-        NoHuffman* direita = nos[1];
-        
-        // Move os elementos restantes
-        for (int i = 0; i < count-2; i++) {
-            nos[i] = nos[i+2];
-        }
-        count -= 2;
-        
-        NoHuffman* pai = criar_no(0, esquerda->frequencia + direita->frequencia);
-        pai->esquerda = esquerda;
-        pai->direita = direita;
-        
-        // Insere ordenado
-        int pos = count;
-        while (pos > 0 && nos[pos-1]->frequencia > pai->frequencia) {
-            nos[pos] = nos[pos-1];
-            pos--;
-        }
-        nos[pos] = pai;
-        count++;
-    }
-    
-    return count > 0 ? nos[0] : NULL;
+int eh_folha(No *no)
+{
+    return (no->esquerda == NULL && no->direita == NULL);
 }
 
-// Geração de códigos otimizada
-void gerar_codigos_otimizado(NoHuffman* raiz, unsigned char codigo[], unsigned char tamanho) {
-    if (!raiz->esquerda && !raiz->direita) {
-        tabela_codigos[raiz->caractere] = malloc(tamanho);
-        memcpy(tabela_codigos[raiz->caractere], codigo, tamanho);
-        tamanho_codigos[raiz->caractere] = tamanho;
+// Funções da heap
+
+Heap* criar_heap()
+{
+    Heap *heap = (Heap *) malloc(sizeof(Heap));
+    heap->tamanho = 0;
+    return heap;
+}
+
+void trocar(No **a, No **b)
+{
+    No *temp = *a;
+    *a = *b;
+    *b = temp;
+}
+
+void inserir_heap(Heap *heap, No *no)
+{
+    int i = heap->tamanho++;
+    heap->dados[i] = no;
+
+    while (i && heap->dados[i]->frequencia < heap->dados[(i - 1) / 2]->frequencia)
+    {
+        trocar(&heap->dados[i], &heap->dados[(i - 1) / 2]);
+        i = (i - 1) / 2;
+    }
+}
+
+No* remover_min(Heap *heap)
+{
+    No *minimo = heap->dados[0];
+    heap->dados[0] = heap->dados[--heap->tamanho];
+
+    int i = 0;
+    while (i * 2 + 1 < heap->tamanho)
+    {
+        int menor = i * 2 + 1;
+        if (menor + 1 < heap->tamanho && heap->dados[menor + 1]->frequencia < heap->dados[menor]->frequencia)
+            menor++;
+
+        if (heap->dados[i]->frequencia <= heap->dados[menor]->frequencia)
+            break;
+
+        trocar(&heap->dados[i], &heap->dados[menor]);
+        i = menor;
+    }
+
+    return minimo;
+}
+
+void contar_frequencias(FILE *arquivo, int *frequencias)
+{
+    BYTE c;
+    while (fread(&c, sizeof(BYTE), 1, arquivo))
+    {
+        frequencias[c]++;
+    }
+}
+
+No* construir_arvore(int *frequencias)
+{
+    Heap *heap = criar_heap();
+    for (int i = 0; i < 256; i++)
+    {
+        if (frequencias[i])
+        {
+            inserir_heap(heap, criar_no((BYTE)i, frequencias[i], NULL, NULL));
+        }
+    }
+
+    while (heap->tamanho > 1)
+    {
+        No *esq = remover_min(heap);
+        No *dir = remover_min(heap);
+        inserir_heap(heap, criar_no('*', esq->frequencia + dir->frequencia, esq, dir));
+    }
+
+    return remover_min(heap);
+}
+
+void gerar_codigos(No *raiz, Codigo *tabela, BYTE *codigo, int nivel)
+{
+    if (raiz == NULL)
+        return;
+
+    if (eh_folha(raiz))
+    {
+        tabela[raiz->caractere].bits = nivel;
+        memcpy(tabela[raiz->caractere].codigo, codigo, nivel);
         return;
     }
-    
-    if (raiz->esquerda) {
-        codigo[tamanho] = '0';
-        gerar_codigos_otimizado(raiz->esquerda, codigo, tamanho+1);
-    }
-    
-    if (raiz->direita) {
-        codigo[tamanho] = '1';
-        gerar_codigos_otimizado(raiz->direita, codigo, tamanho+1);
-    }
+
+    codigo[nivel] = 0;
+    gerar_codigos(raiz->esquerda, tabela, codigo, nivel + 1);
+
+    codigo[nivel] = 1;
+    gerar_codigos(raiz->direita, tabela, codigo, nivel + 1);
 }
 
-// Serialização otimizada da árvore
-void serializar_arvore_otimizada(NoHuffman* no, BitStream *bs, FILE *out, unsigned short *tamanho) {
-    if (!no->esquerda && !no->direita) {
-        write_bit(bs, 1, out); // Folha
-        (*tamanho)++;
-        for (int i = 7; i >= 0; i--) {
-            write_bit(bs, (no->caractere >> i) & 1, out);
+void escrever_arvore(No *raiz, FILE *out, int *tamanho)
+{
+    if (raiz == NULL)
+        return;
+
+    if (eh_folha(raiz))
+    {
+        BYTE c = raiz->caractere;
+        if (c == '*' || c == '\\')
+        {
+            BYTE barra = '\\';
+            fwrite(&barra, sizeof(BYTE), 1, out);
             (*tamanho)++;
         }
-    } else {
-        write_bit(bs, 0, out); // Nó interno
+        fwrite(&c, sizeof(BYTE), 1, out);
         (*tamanho)++;
-        serializar_arvore_otimizada(no->esquerda, bs, out, tamanho);
-        serializar_arvore_otimizada(no->direita, bs, out, tamanho);
+        return;
     }
+
+    BYTE estrela = '*';
+    fwrite(&estrela, sizeof(BYTE), 1, out);
+    (*tamanho)++;
+    escrever_arvore(raiz->esquerda, out, tamanho);
+    escrever_arvore(raiz->direita, out, tamanho);
 }
 
-// ================= COMPACTAÇÃO PRINCIPAL =================
+void escrever_header(FILE *out, int trash_bits, int tree_size)
+{
+    unsigned short header = (trash_bits << 13) | tree_size;
+    BYTE byte1 = header >> 8;
+    BYTE byte2 = header & 0xFF;
+    fwrite(&byte1, sizeof(BYTE), 1, out);
+    fwrite(&byte2, sizeof(BYTE), 1, out);
+}
 
-void compactar_arquivo(const char *input_filename, const char *output_filename) {
-    FILE *in = fopen(input_filename, "rb");
-    if (!in) {
-        perror("Erro ao abrir arquivo de entrada");
+void ler_header(FILE *in, int *trash_bits, unsigned short *tree_size)
+{
+    BYTE byte1, byte2;
+    fread(&byte1, sizeof(BYTE), 1, in);
+    fread(&byte2, sizeof(BYTE), 1, in);
+    unsigned short header = (byte1 << 8) | byte2;
+    *trash_bits = header >> 13;
+    *tree_size = header & 0x1FFF;
+}
+
+No* reconstruir_arvore(FILE *in, int *pos)
+{
+    BYTE c;
+    fread(&c, sizeof(BYTE), 1, in);
+    (*pos)--;
+
+    if (c == '*')
+    {
+        No *esq = reconstruir_arvore(in, pos);
+        No *dir = reconstruir_arvore(in, pos);
+        return criar_no('*', 0, esq, dir);
+    }
+    else if (c == '\\')
+    {
+        fread(&c, sizeof(BYTE), 1, in);
+        (*pos)--;
+    }
+
+    return criar_no(c, 0, NULL, NULL);
+}
+
+void compactar_arquivo(const char *entrada, const char *saida)
+{
+    FILE *in = fopen(entrada, "rb");
+    if (!in)
+    {
+        printf("Erro ao abrir arquivo de entrada\n");
         return;
     }
 
-    // Análise do arquivo
-    fseek(in, 0, SEEK_END);
-    long original_size = ftell(in);
+    int frequencias[256] = {0};
+    contar_frequencias(in, frequencias);
     rewind(in);
 
-    if (original_size == 0) {
-        fclose(in);
-        printf("Erro: Arquivo vazio!\n");
-        return;
-    }
+    No *raiz = construir_arvore(frequencias);
+    Codigo tabela[256] = {0};
+    BYTE codigo[256];
+    gerar_codigos(raiz, tabela, codigo, 0);
 
-    // Cálculo de frequências com buffer grande
-    unsigned long freq[TAM_ASCII] = {0};
-    unsigned char buffer[BUFFER_SIZE];
-    size_t bytes_lidos;
-    
-    while ((bytes_lidos = fread(buffer, 1, BUFFER_SIZE, in)) > 0) {
-        for (size_t i = 0; i < bytes_lidos; i++) {
-            freq[buffer[i]]++;
-        }
-    }
-    rewind(in);
+    FILE *out = fopen(saida, "wb");
+    fseek(out, 2, SEEK_SET);
 
-    // Construção da árvore otimizada
-    NoHuffman* raiz = construir_arvore_otimizada(freq);
-    if (!raiz) {
-        fclose(in);
-        printf("Erro ao construir árvore de Huffman\n");
-        return;
-    }
+    int tree_size = 0;
+    escrever_arvore(raiz, out, &tree_size);
 
-    // Geração dos códigos
-    unsigned char codigo[256] = {0};
-    gerar_codigos_otimizado(raiz, codigo, 0);
+    BYTE buffer = 0;
+    int bits_usados = 0;
+    BYTE c;
+    while (fread(&c, sizeof(BYTE), 1, in))
+    {
+        for (int i = 0; i < tabela[c].bits; i++)
+        {
+            buffer <<= 1;
+            if (tabela[c].codigo[i])
+                buffer |= 1;
+            bits_usados++;
 
-    // Arquivo de saída
-    FILE *out = fopen(output_filename, "wb");
-    if (!out) {
-        fclose(in);
-        liberar_arvore(raiz);
-        perror("Erro ao abrir arquivo de saída");
-        return;
-    }
-
-    // Header temporário
-    HuffmanHeader header = {0};
-    fwrite(&header, sizeof(header), 1, out);
-
-    // Serialização da árvore
-    BitStream bs;
-    init_bit_stream(&bs);
-    unsigned short tamanho_arvore = 0;
-    serializar_arvore_otimizada(raiz, &bs, out, &tamanho_arvore);
-    flush_bit_stream(&bs, out);
-
-    // Atualiza header
-    long pos_after_tree = ftell(out);
-    header.tree_size = pos_after_tree - sizeof(header);
-
-    // Compactação dos dados
-    init_bit_stream(&bs);
-    while ((bytes_lidos = fread(buffer, 1, BUFFER_SIZE, in)) > 0) {
-        for (size_t i = 0; i < bytes_lidos; i++) {
-            unsigned char c = buffer[i];
-            for (unsigned char j = 0; j < tamanho_codigos[c]; j++) {
-                write_bit(&bs, tabela_codigos[c][j] == '1' ? 1 : 0, out);
+            if (bits_usados == 8)
+            {
+                fwrite(&buffer, sizeof(BYTE), 1, out);
+                bits_usados = 0;
+                buffer = 0;
             }
         }
     }
-    flush_bit_stream(&bs, out);
 
-    // Calcula trash bits e atualiza header
-    header.trash = (8 - bs.bits_preenchidos) % 8;
-    fseek(out, 0, SEEK_SET);
-    fwrite(&header, sizeof(header), 1, out);
+    if (bits_usados > 0) {
+        buffer <<= (8 - bits_usados);
+        fwrite(&buffer, sizeof(BYTE), 1, out);
+    }
 
-    // Estatísticas
-    fseek(out, 0, SEEK_END);
-    long compressed_size = ftell(out);
-    double taxa_compressao = (1.0 - (double)compressed_size/original_size) * 100;
+    int trash_bits = bits_usados ? 8 - bits_usados : 0;
+    rewind(out);
+    escrever_header(out, trash_bits, tree_size);
 
-    // Liberação de recursos
     fclose(in);
     fclose(out);
-    liberar_arvore(raiz);
-    for (int i = 0; i < TAM_ASCII; i++) {
-        if (tabela_codigos[i]) free(tabela_codigos[i]);
-    }
-
-    printf("Compactação concluída:\n");
-    printf("- Tamanho original: %ld bytes\n", original_size);
-    printf("- Tamanho compactado: %ld bytes\n", compressed_size);
-    printf("- Taxa de compressão: %.2f%%\n", taxa_compressao);
-    printf("- Bits de lixo: %d\n", header.trash);
-    printf("- Tamanho da árvore: %d bytes\n", header.tree_size);
+    printf("Arquivo compactado com sucesso!\n");
 }
 
-// ================= DESCOMPACTAÇÃO =================
-
-void descompactar_arquivo(const char *input_filename, const char *output_filename) {
-    if (!input_filename || !output_filename) {
-        printf("ERRO!\n");
-        return;
-    }
-    
-    FILE *in = fopen(input_filename, "rb");
-    if (!in) {
-        perror("Erro ao abrir arquivo compactado");
+void descompactar_arquivo(const char *entrada, const char *saida)
+{
+    FILE *in = fopen(entrada, "rb");
+    if (!in)
+    {
+        printf("Erro ao abrir arquivo de entrada\n");
         return;
     }
 
-    unsigned char header_bytes[2];
-    if (fread(header_bytes, 1, 2, in) != 2) {
-        fclose(in);
-        printf("Erro ao ler cabeçalho do arquivo\n");
-        return;
-    }
+    int trash_bits;
+    unsigned short tree_size;
+    ler_header(in, &trash_bits, &tree_size);
 
-    unsigned short header_value = (header_bytes[0] << 8) | header_bytes[1];
-    int trash_bits = (header_value >> 13) & 0x7;
-    unsigned short tree_size = header_value & 0x1FFF;
+    int pos = tree_size;
+    No *raiz = reconstruir_arvore(in, &pos);
 
-    NoHuffman* raiz = desserializar_arvore(in);
-    if (!raiz) {
-        fclose(in);
-        printf("Erro ao reconstruir a árvore de Huffman\n");
-        return;
-    }
-
-    long pos_after_tree = ftell(in);
+    FILE *out = fopen(saida, "wb");
+    No *atual = raiz;
+    BYTE c;
+    long total_bytes = ftell(in);
     fseek(in, 0, SEEK_END);
-    long file_size = ftell(in);
-    fseek(in, pos_after_tree, SEEK_SET);
+    long tamanho_total = ftell(in) - total_bytes;
+    fseek(in, total_bytes, SEEK_SET);
 
-    FILE *out = fopen(output_filename, "wb");
-    if (!out) {
-        fclose(in);
-        liberar_arvore(raiz);
-        perror("Erro ao criar arquivo de saída");
-        return;
-    }
-
-    NoHuffman* atual = raiz;
-    unsigned char byte;
-    long bytes_processados = 0;
-    
-    while (fread(&byte, 1, 1, in) == 1) {
-        bytes_processados++;
-        int is_last_byte = (bytes_processados == (file_size - pos_after_tree));
-        int bits_to_process = is_last_byte ? (8 - trash_bits) : 8;
-
-        for (int i = 7; i >= (8 - bits_to_process); i--) {
-            int bit = (byte >> i) & 1;
-            
+    for (long i = 0; i < tamanho_total; i++)
+    {
+        fread(&c, sizeof(BYTE), 1, in);
+        for (int j = 7; j >= 0; j--)
+        {
+            int bit = (c >> j) & 1;
             atual = bit ? atual->direita : atual->esquerda;
-            
-            if (!atual) {
-                printf("Erro: Caminho inválido na árvore de Huffman\n");
-                fclose(in);
-                fclose(out);
-                liberar_arvore(raiz);
-                return;
-            }
 
-            if (!atual->esquerda && !atual->direita) {
-                fputc(atual->caractere, out);
+            if (eh_folha(atual))
+            {
+                fwrite(&atual->caractere, sizeof(BYTE), 1, out);
                 atual = raiz;
             }
+
+            if (i == tamanho_total - 1 && j == trash_bits)
+                break;
         }
     }
 
     fclose(in);
     fclose(out);
-    liberar_arvore(raiz);
-    printf("Arquivo descompactado com sucesso: %s\n", output_filename);
+    printf("Arquivo descompactado com sucesso!\n");
 }
 
-// ================= VERIFICAÇÃO DE INTEGRIDADE =================
-
-void verificar_integridade(const char *arquivo_compactado, const char *arquivo_descompactado) {
-    char nome_original[256];
-    strncpy(nome_original, arquivo_compactado, strlen(arquivo_compactado) - 5);
-    nome_original[strlen(arquivo_compactado) - 5] = '\0';
-    
-    FILE *original = fopen(nome_original, "rb");
-    FILE *descompactado = fopen(arquivo_descompactado, "rb");
-    
-    if (!original || !descompactado) {
-        if (!original) printf("Arquivo original %s nao encontrado\n", nome_original);
-        if (!descompactado) printf("Arquivo descompactado %s nao encontrado\n", arquivo_descompactado);
-        if (original) fclose(original);
-        if (descompactado) fclose(descompactado);
+// Função nova: Verificar header
+void verificar_header(const char *arquivo)
+{
+    FILE *in = fopen(arquivo, "rb");
+    if (!in)
+    {
+        perror("Erro ao abrir arquivo");
         return;
     }
 
-    int c1, c2;
-    long pos = 0;
-    int diferencas = 0;
+    int trash_bits;
+    unsigned short tree_size;
+    ler_header(in, &trash_bits, &tree_size);
 
-    while ((c1 = fgetc(original)) != EOF && (c2 = fgetc(descompactado)) != EOF) {
-        if (c1 != c2) {
-            printf("Diferenca na posicao %ld: original=0x%02X, descompactado=0x%02X\n", 
-                  pos, c1, c2);
-            diferencas++;
-        }
-        pos++;
-    }
+    printf("Header do arquivo %s:\n", arquivo);
+    printf("- Bits de lixo: %d\n", trash_bits);
+    printf("- Tamanho da árvore: %hu bytes\n", tree_size);
 
-    if (fgetc(original) != EOF || fgetc(descompactado) != EOF) {
-        printf("AVISO: Os arquivos tem tamanhos diferentes!\n");
-    }
-
-    fclose(original);
-    fclose(descompactado);
-
-    if (diferencas == 0) {
-        printf("Verificacao concluida: arquivos identicos\n");
-    } else {
-        printf("AVISO: Encontradas %d diferencas\n", diferencas);
-    }
+    fclose(in);
 }
 
-// ================= FUNÇÃO PRINCIPAL =================
+// Função nova: Verificar integridade
+void verificar_integridade(const char *arquivo_compactado, const char *arquivo_descompactado)
+{
+    FILE *f1 = fopen(arquivo_compactado, "rb");
+    FILE *f2 = fopen(arquivo_descompactado, "rb");
 
-int main() {
+    if (!f1 || !f2)
+    {
+        printf("Erro ao abrir arquivos para verificação\n");
+        if (f1) fclose(f1);
+        if (f2) fclose(f2);
+        return;
+    }
+
+    int trash_bits;
+    unsigned short tree_size;
+    ler_header(f1, &trash_bits, &tree_size);
+    fseek(f1, 2 + tree_size, SEEK_SET);
+
+    int erro = 0;
+    long offset = 0;
+    int c1, c2;
+
+    while ((c1 = fgetc(f1)) != EOF && (c2 = fgetc(f2)) != EOF)
+    {
+        if (c1 != c2)
+        {
+            erro = 1;
+            break;
+        }
+        offset++;
+    }
+
+    if ((c1 != EOF || c2 != EOF) && !erro)
+        erro = 1;
+
+    if (erro)
+    {
+        printf("Arquivos são diferentes a partir do byte %ld\n", offset);
+    }
+    else 
+    {
+        printf("Arquivos são idênticos após a descompactação!\n");
+    }
+
+    fclose(f1);
+    fclose(f2);
+}
+
+// MAIN
+int main()
+{
     setlocale(LC_ALL, "Portuguese");
 
     int opcao;
@@ -414,34 +406,31 @@ int main() {
     printf("2. Descompactar arquivo\n");
     printf("3. Verificar header\n");
     printf("Escolha: ");
-    if (scanf("%d", &opcao) != 1) {
+    if (scanf("%d", &opcao) != 1)
+    {
         printf("Entrada inválida\n");
         return 1;
     }
     getchar();
 
-    if (opcao == 1) {
+    if (opcao == 1)
+    {
         printf("Arquivo a compactar: ");
-        if (!fgets(nome_arquivo, sizeof(nome_arquivo), stdin)) {
-            printf("Erro ao ler entrada\n");
-            return 1;
-        }
+        fgets(nome_arquivo, sizeof(nome_arquivo), stdin);
         nome_arquivo[strcspn(nome_arquivo, "\n")] = '\0';
-
         strcpy(nome_original, nome_arquivo);
         strcat(nome_arquivo, ".huff");
-
         compactar_arquivo(nome_original, nome_arquivo);
 
-    } else if (opcao == 2) {
+    }
+    else if (opcao == 2)
+    {
         printf("Arquivo .huff a descompactar: ");
-        if (!fgets(nome_arquivo, sizeof(nome_arquivo), stdin)) {
-            printf("Erro ao ler entrada\n");
-            return 1;
-        }
+        fgets(nome_arquivo, sizeof(nome_arquivo), stdin);
         nome_arquivo[strcspn(nome_arquivo, "\n")] = '\0';
 
-        if (!strstr(nome_arquivo, ".huff")) {
+        if (!strstr(nome_arquivo, ".huff"))
+        {
             printf("Deve ser um arquivo .huff\n");
             return 1;
         }
@@ -454,19 +443,21 @@ int main() {
 
         printf("\nDeseja verificar a integridade? (s/n): ");
         char resposta = getchar();
-        if (resposta == 's' || resposta == 'S') {
+        if (resposta == 's' || resposta == 'S')
+        {
             verificar_integridade(nome_arquivo, nome_saida);
         }
-    } else if (opcao == 3) {
+
+    }
+    else if (opcao == 3)
+    {
         printf("Arquivo .huff para verificar header: ");
-        if (!fgets(nome_arquivo, sizeof(nome_arquivo), stdin)) {
-            printf("Erro ao ler entrada\n");
-            return 1;
-        }
+        fgets(nome_arquivo, sizeof(nome_arquivo), stdin);
         nome_arquivo[strcspn(nome_arquivo, "\n")] = '\0';
-        
         verificar_header(nome_arquivo);
-    } else {
+    }
+    else
+    {
         printf("Opção inválida!\n");
         return 1;
     }
