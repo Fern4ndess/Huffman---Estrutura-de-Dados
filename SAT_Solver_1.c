@@ -338,6 +338,6 @@ int main()
     liberar_arvore(raiz);
     
     return 0;
-}
+} 
 
 // Função principal DPLL (corrigida)
